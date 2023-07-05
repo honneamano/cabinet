@@ -4,7 +4,10 @@
   "description": "CABINET is responsible for corresponding all microservices, provides internal authentication and message relaying etc.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node honneamano.cabinet.dist.js",
+    "dev": "webpack",
+    "dist": "webpack --production",
+    "debug": "node honneamano.cabinet.dev.js"
   },
   "repository": {
     "type": "git",
@@ -15,5 +18,18 @@
   "bugs": {
     "url": "https://github.com/honneamano/cabinet/issues"
   },
-  "homepage": "https://github.com/honneamano/cabinet#readme"
+  "homepage": "https://github.com/honneamano/cabinet#readme",
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "lodash": "^4.17.21",
+    "msgpackr": "^1.9.5",
+    "redis": "^4.6.7",
+    "toml": "^3.0.0",
+    "webpack-node-externals": "^3.0.0"
+  },
+  "devDependencies": {
+    "ifdef-loader": "^2.3.2",
+    "webpack": "^5.88.1",
+    "webpack-cli": "^5.1.4"
+  }
 }
