@@ -12,18 +12,26 @@ import _ from "lodash";
 import * as redis from "redis";
 import { pack, unpack } from "msgpackr";
 import { Buffer } from "buffer";
+import { v4 as uuidv4 } from "uuid";
+
+
+const RPC_TIMEOUT = 5000;
+const RESERVED_TYPES = ["error", "request", "response"];
 
 
 class Envelope {
 
     constructor(serializedBase64){
-        if(_.isNil(serializedBase64)) return;
+        if(_.isNil(serializedBase64)){
+            this.uuid = uuidv4();
+            return;
+        }
 
         try{
             let data = unpack(Buffer.from(serializedBase64, "base64"));
-            let [ type, sender, receiver, payload ] = data;
+            let [ type, sender, receiver, payload, uuid ] = data;
 
-            if(![ type, sender,receiver].every(e=>_.isString(e))){
+            if(![ type, sender, receiver, uuid].every(e=>_.isString(e))){
                 throw Error();
             }
 
@@ -31,6 +39,7 @@ class Envelope {
             this.receiver   = receiver;
             this.payload    = payload;
             this.type       = type.toLowerCase();
+            this.uuid       = uuid;
         } catch(e){
             throw Error("Error parsing enveloped data.");
         }
@@ -38,7 +47,7 @@ class Envelope {
 
     toString(){
         return Buffer.from(pack(
-            [this.type, this.sender, this.receiver, this.payload]
+            [this.type, this.sender, this.receiver, this.payload, this.uuid]
         )).toString('base64');
     }
 
@@ -63,6 +72,9 @@ class AgentOfTransmission extends events.EventEmitter {
 
     #subscriber;
     #publisher;
+
+    #responderFunctions;
+    #pendingRequests;
     
     constructor(args){
         super();
@@ -72,8 +84,9 @@ class AgentOfTransmission extends events.EventEmitter {
             _.get(args, "config.host")
         );
 
-        this.#localName = _.get(args, "localName");
+        this.#pendingRequests = new Map();
 
+        this.#localName = _.get(args, "localName");
         this.#subscriber = this.#client.duplicate();
         
     }
@@ -88,33 +101,90 @@ class AgentOfTransmission extends events.EventEmitter {
         return this;
     }
 
+
+
+    async request(targetName, args, options){
+        const newUUID = await this.sendMessage(
+            "request",
+            targetName,
+            args
+        );
+        const timeout = _.get(options, "timeout", RPC_TIMEOUT);
+        return new Promise((resolve, reject)=>{
+            this.#pendingRequests.set(
+                newUUID,
+                (...args)=>{
+                    resolve.call(this, ...args);
+                    this.#pendingRequests.delete(newUUID);
+                }
+            );
+            setTimeout(
+                ()=>{
+                    this.#pendingRequests.delete(newUUID);
+                    reject(new Error("Timeout."));
+                },
+                timeout
+            );
+        });
+    }
+
+    #onRequest(envelope){
+        // Emit the "request" event, call other code to handle. 
+        this.emit("request", envelope.payload, (result)=>{
+            this.sendMessage(
+                "response", 
+                envelope.sender,
+                [envelope.uuid, result]
+            );
+        });
+    }
+
+    #onResponse(envelope){
+        let originalUUID = _.get(envelope, "payload.0"),
+            result       = _.get(envelope, "payload.1");
+        let resolveFunc = this.#pendingRequests.get(originalUUID);
+        if(!_.isFunction(resolveFunc)) return;
+        resolveFunc(result);
+    }
+
+
+
     #onMessage(encodedPayload, channel){
         try{
             const data = new Envelope(encodedPayload);
-            const reservedTypes = ["error"];
-
+            
             if(data.sender == this.#localName) return; // ignore self messages
-            if(_.includes(reservedTypes, data.type)) return; // invalid
 
-            this.emit(data.type, data);
+            switch(data.type){
+            case "request":
+                this.#onRequest(data);
+                break;
+            case "response":
+                this.#onResponse(data);
+                break;
+            default:
+                // filtered out reserved types and emit
+                if(_.includes(RESERVED_TYPES, data.type)) return; // invalid
+                this.emit(data.type, data);
+            }
         } catch(e){
             console.error(e);
         }
     }
 
-
-
-    sendMessage(type, targetName, payload){
+    async sendMessage(type, targetName, payload){
         const data       = new Envelope();
         data.sender      = this.#localName;
         data.receiver    = targetName;
         data.payload     = payload;
         data.type        = type;
 
-        return this.#client.publish(
+        await this.#client.publish(
             data.receiverAddress,
             data.toString()
         );
+
+        return data.uuid;
     } 
 
 
